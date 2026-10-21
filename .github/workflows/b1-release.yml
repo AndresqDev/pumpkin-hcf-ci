@@ -1,0 +1,49 @@
+name: B1 Linux release
+
+on:
+  workflow_dispatch:
+    inputs:
+      rust_toolchain_version:
+        description: Rust toolchain version to use
+        required: false
+        default: "1.96.0"
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTUP_TOOLCHAIN: ${{ inputs.rust_toolchain_version || '1.96.0' }}
+  RUST_MIN_STACK: "67108864"
+  RUSTFLAGS: "-Dwarnings -A unknown_lints -C link-arg=-fuse-ld=lld"
+  # Fat LTO + codegen-units=1 agota la RAM del runner al enlazar Pumpkin.
+  # Sin LTO el enlace cabe en 7 GB y el A/B sigue usando el mismo binario;
+  # el release de produccion puede reconstruirse con fat LTO en un host
+  # con mas RAM.
+  CARGO_PROFILE_RELEASE_LTO: "false"
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+  CARGO_BUILD_JOBS: "4"
+
+jobs:
+  build_linux_release:
+    name: Build Linux x64 release for B1
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - run: rustup update ${{ env.RUSTUP_TOOLCHAIN }} && rustup default ${{ env.RUSTUP_TOOLCHAIN }}
+      - name: Instalar lld
+        run: sudo apt-get update && sudo apt-get install -y lld
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: b1-release-${{ runner.os }}-${{ runner.arch }}
+      - name: Build release binary
+        run: cargo build --release --locked -p pumpkin
+      - name: Strip binary
+        run: strip target/release/pumpkin
+      - name: Upload binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: pumpkin-linux-x64-b1
+          path: target/release/pumpkin
+          retention-days: 7
