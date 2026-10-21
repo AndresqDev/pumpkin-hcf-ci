@@ -1,0 +1,400 @@
+name: B1 Loadtest (split Pumpkin/ViaProxy/bots)
+
+# B1 corre enteramente en GitHub Actions: construye/usar un binario release
+# parcheado, levanta Pumpkin y ViaProxy en runners separados unidos por
+# Tailscale, y reparte 100 bots Mineflayer 1.8.9 en 4 shards.
+#
+# El binario se descarga del artifact `pumpkin-linux-x64-b1` del run indicado
+# en `binary_run_id` (workflow b1-release.yml). No se ejecuta nada en local.
+
+on:
+  workflow_dispatch:
+    inputs:
+      binary_run_id:
+        description: 'Run ID del artifact pumpkin-linux-x64-b1'
+        required: true
+        type: string
+      hcf:
+        description: 'Activar perfil HCF'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      bots:
+        description: 'Total de bots (4 shards)'
+        required: true
+        default: '100'
+        type: string
+      minutes:
+        description: 'Minutos que la pila queda arriba'
+        required: true
+        default: '20'
+        type: string
+      phases:
+        description: 'Fases: idle:30,move:60,fight:120'
+        required: true
+        default: 'idle:30,move:60,fight:120'
+        type: string
+
+concurrency:
+  group: b1-loadtest
+  cancel-in-progress: false
+
+env:
+  HCF: ${{ inputs.hcf }}
+  BOTS: ${{ inputs.bots }}
+  MINUTES: ${{ inputs.minutes }}
+  PHASES: ${{ inputs.phases }}
+  RUN_ID: ${{ github.run_id }}
+  VIAPROXY_JAR: 'ViaProxy-3.4.14.jar'
+  VIAPROXY_URL: 'https://github.com/ViaVersion/ViaProxy/releases/download/v3.4.14/ViaProxy-3.4.14.jar'
+
+jobs:
+  server:
+    name: pumpkin-${{ inputs.hcf }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Descargar binario parcheado
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p server
+          gh run download "${{ inputs.binary_run_id }}" \
+            --repo "${{ github.repository }}" \
+            --name pumpkin-linux-x64-b1 \
+            --dir server
+          chmod +x server/pumpkin
+          ls -lh server/pumpkin
+
+      - name: Unirse al tailnet
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          hostname: b1-server-${{ github.run_id }}
+
+      - name: Preparar config
+        run: |
+          set -euo pipefail
+          cp loadtest/pumpkin.toml server/pumpkin.toml
+          if [ "${HCF}" = "true" ]; then
+            printf '\n[hcf]\nenabled = true\nprofile = "hcf-1.8"\n' >> server/pumpkin.toml
+          else
+            printf '\n[hcf]\nenabled = false\n' >> server/pumpkin.toml
+          fi
+          MAX=$(( BOTS + 20 ))
+          sed -i "s/^max_players = .*/max_players = ${MAX}/" server/pumpkin.toml
+          sed -i 's/^max_packet_rate = .*/max_packet_rate = 500.0/' server/pumpkin.toml
+          sed -i 's/^burst_capacity = .*/burst_capacity = 500.0/' server/pumpkin.toml
+          echo '--- HCF config ---'
+          tail -5 server/pumpkin.toml
+          echo '--- CPU del runner (pumpkin) ---'
+          nproc
+          free -m | head -2
+
+      - name: Iniciar Pumpkin y preparar arena
+        run: |
+          set -uo pipefail
+          cd server
+          TS_IP=$(tailscale ip -4 | head -1)
+          echo "SERVER_IP=${TS_IP}"
+
+          nohup ./pumpkin > pumpkin.log 2>&1 &
+          PUMPKIN_PID=$!
+          echo "PUMPKIN_PID=$PUMPKIN_PID" >> "$GITHUB_ENV"
+
+          ready=0
+          for _ in $(seq 1 120); do
+            if ! kill -0 "$PUMPKIN_PID" 2>/dev/null; then break; fi
+            if python3 ../loadtest/rcon.py tps lazarus-test 127.0.0.1 25575 >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != "1" ]; then
+            echo "ERROR: Pumpkin no respondio por RCON"
+            tail -100 pumpkin.log
+            exit 1
+          fi
+          for _ in $(seq 1 30); do
+            grep -q "Started server" pumpkin.log && break
+            sleep 2
+          done
+          echo "--- Pumpkin listo ---"
+          grep -iE "Started server|HCF_PROFILE|HCF_METRIC" pumpkin.log | tail -20 || true
+
+          rcon() {
+            python3 ../loadtest/rcon.py "$1" lazarus-test 127.0.0.1 25575 || true
+          }
+          rcon "gamerule doDaylightCycle false"
+          rcon "gamerule doWeatherCycle false"
+          rcon "time set day"
+          rcon "weather clear"
+          rcon "forceload add 5 5 8 8"
+          rcon "fill 80 99 80 120 99 120 minecraft:stone"
+          rcon "fill 80 100 80 120 110 120 minecraft:air"
+          rcon "setworldspawn 100 100 100"
+          rcon "forceload remove all"
+
+          PUMPKIN_PID=$PUMPKIN_PID \
+            nohup python3 ../loadtest/b1_sampler.py \
+              --out b1.csv --interval 2 > sampler.log 2>&1 &
+          echo "SAMPLER_PID=$!" >> "$GITHUB_ENV"
+
+          {
+            echo "## B1 Pumpkin listo"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| HCF | ${HCF} |"
+            echo "| Bots | ${BOTS} |"
+            echo "| Backend | \`${TS_IP}:25566\` |"
+            echo "| RCON | \`${TS_IP}:25575\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "SERVER_READY tcp://${TS_IP}:25566"
+
+      - name: Mantener Pumpkin arriba
+        run: |
+          set -uo pipefail
+          END=$(( $(date +%s) + MINUTES * 60 ))
+          while [ "$(date +%s)" -lt "$END" ]; do
+            if ! kill -0 "$PUMPKIN_PID" 2>/dev/null; then
+              echo "ERROR: Pumpkin murio"
+              tail -100 server/pumpkin.log
+              exit 1
+            fi
+            LAST=$(tail -1 server/sampler.log 2>/dev/null || true)
+            echo "[$(date -u +%H:%M:%S)] ${LAST:-sin muestras}"
+            sleep 20
+          done
+
+      - name: Bajar Pumpkin
+        if: always()
+        run: |
+          set +e
+          for p in "${SAMPLER_PID:-}" "${PUMPKIN_PID:-}"; do
+            [ -n "$p" ] && kill "$p" 2>/dev/null
+          done
+          sleep 5
+          echo '--- pumpkin.log (cola) ---'; tail -60 server/pumpkin.log 2>/dev/null
+          echo '--- sampler.log (cola) ---'; tail -10 server/sampler.log 2>/dev/null
+
+      - name: Subir artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: b1-server-hcf-${{ inputs.hcf }}
+          path: |
+            server/pumpkin.log
+            server/logs/latest.log
+            server/b1.csv
+            server/sampler.log
+            server/pumpkin.toml
+          if-no-files-found: warn
+          retention-days: 7
+
+  proxy:
+    name: viaproxy
+    needs: server
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Unirse al tailnet
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          hostname: b1-proxy-${{ github.run_id }}
+
+      - name: Descargar ViaProxy
+        run: |
+          set -euo pipefail
+          mkdir -p proxy
+          curl -fsSL -o "proxy/${VIAPROXY_JAR}" "${VIAPROXY_URL}"
+          cp loadtest/viaproxy.yml proxy/viaproxy.yml
+          ls -lh "proxy/${VIAPROXY_JAR}"
+
+      - name: Esperar Pumpkin y arrancar ViaProxy
+        run: |
+          set -uo pipefail
+          cd proxy
+          TS_IP=$(tailscale ip -4 | head -1)
+          echo "PROXY_IP=${TS_IP}"
+
+          SRV_IP=""
+          for _ in $(seq 1 120); do
+            for ip in $(tailscale status | grep "b1-server-${RUN_ID}" | grep -v offline | awk '{print $1}'); do
+              if (exec 3<>/dev/tcp/$ip/25566) 2>/dev/null; then SRV_IP=$ip; break; fi
+            done
+            [ -n "$SRV_IP" ] && break
+            sleep 5
+          done
+          if [ -z "$SRV_IP" ]; then
+            echo "ERROR: no encontre Pumpkin en el tailnet"
+            tailscale status
+            exit 1
+          fi
+          echo "backend=${SRV_IP}:25566"
+          sed -i "s|^target-address: .*|target-address: ${SRV_IP}:25566|" viaproxy.yml
+
+          nohup java -Xms512m -Xmx2g -XX:+UseG1GC -XX:MaxGCPauseMillis=20 \
+            -jar "${VIAPROXY_JAR}" config viaproxy.yml > viaproxy.log 2>&1 &
+          VIAPROXY_PID=$!
+          echo "VIAPROXY_PID=$VIAPROXY_PID" >> "$GITHUB_ENV"
+
+          vready=0
+          for _ in $(seq 1 120); do
+            if ! kill -0 "$VIAPROXY_PID" 2>/dev/null; then break; fi
+            if (exec 3<>/dev/tcp/127.0.0.1/25565) 2>/dev/null; then vready=1; break; fi
+            sleep 2
+          done
+          if [ "$vready" != "1" ]; then
+            echo "ERROR: ViaProxy no abrio 25565"; tail -100 viaproxy.log; exit 1
+          fi
+          echo "--- ViaProxy listo ---"
+
+          {
+            echo "## B1 ViaProxy listo"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Join | \`${TS_IP}:25565\` |"
+            echo "| Backend | \`${SRV_IP}:25566\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "JOIN_READY tcp://${TS_IP}:25565"
+
+      - name: Mantener ViaProxy arriba
+        run: |
+          set -uo pipefail
+          END=$(( $(date +%s) + MINUTES * 60 ))
+          while [ "$(date +%s)" -lt "$END" ]; do
+            if ! kill -0 "$VIAPROXY_PID" 2>/dev/null; then
+              echo "ERROR: ViaProxy murio"
+              tail -100 proxy/viaproxy.log
+              exit 1
+            fi
+            echo "[$(date -u +%H:%M:%S)] viaproxy vivo"
+            sleep 20
+          done
+
+      - name: Bajar ViaProxy
+        if: always()
+        run: |
+          set +e
+          [ -n "${VIAPROXY_PID:-}" ] && kill "$VIAPROXY_PID" 2>/dev/null
+          sleep 5
+          echo '--- viaproxy.log (cola) ---'; tail -60 proxy/viaproxy.log 2>/dev/null
+
+      - name: Subir logs del proxy
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: b1-proxy
+          path: |
+            proxy/viaproxy.log
+            proxy/viaproxy.yml
+          if-no-files-found: warn
+          retention-days: 7
+
+  bots:
+    name: bots shard ${{ matrix.shard }}
+    needs: proxy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: loadtest/package-lock.json
+
+      - name: Instalar dependencias
+        working-directory: loadtest
+        run: npm ci --no-audit --no-fund
+
+      - name: Unirse al tailnet
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          hostname: b1-bots-${{ matrix.shard }}-${{ github.run_id }}
+
+      - name: Descubrir ViaProxy
+        run: |
+          set -euo pipefail
+          PROXY_IP=""
+          for _ in $(seq 1 60); do
+            for ip in $(tailscale status | grep "b1-proxy-${RUN_ID}" | grep -v offline | awk '{print $1}'); do
+              if (exec 3<>/dev/tcp/$ip/25565) 2>/dev/null; then PROXY_IP=$ip; break; fi
+            done
+            [ -n "$PROXY_IP" ] && break
+            sleep 5
+          done
+          if [ -z "$PROXY_IP" ]; then
+            echo "ERROR: no encontre ViaProxy"
+            tailscale status
+            exit 1
+          fi
+          echo "PROXY_IP=${PROXY_IP}" >> "$GITHUB_ENV"
+          echo "OK ${PROXY_IP}:25565"
+
+      - name: Calcular shard
+        id: calc
+        run: |
+          set -euo pipefail
+          PER=$(( (BOTS + 3) / 4 ))
+          START=$(( ${{ matrix.shard }} * PER + 1 ))
+          echo "per=${PER}" >> "$GITHUB_OUTPUT"
+          echo "start=${START}" >> "$GITHUB_OUTPUT"
+          echo "shard ${{ matrix.shard }}: ${PER} bots desde Perf${START}"
+
+      - name: Generar carga
+        working-directory: loadtest
+        shell: bash
+        run: |
+          set -euo pipefail
+          node shard.js \
+            --host "$PROXY_IP" \
+            --port 25565 \
+            --count "${{ steps.calc.outputs.per }}" \
+            --startIndex "${{ steps.calc.outputs.start }}" \
+            --shard "${{ matrix.shard }}" \
+            --workers 4 \
+            --joinSpacing 900 \
+            --phases "$PHASES" \
+            --arenaX 100 \
+            --arenaZ 100 \
+            --prefix Perf \
+            --version 1.8.9 \
+            2>&1 | tee "shard-${{ matrix.shard }}.log"
+
+      - name: Subir log del shard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: b1-bots-${{ matrix.shard }}
+          path: loadtest/shard-${{ matrix.shard }}.log
+          if-no-files-found: warn
+          retention-days: 7
