@@ -38,6 +38,10 @@ on:
         default: 'idle:30,move:60,fight:120'
         type: string
 
+permissions:
+  actions: read
+  contents: read
+
 concurrency:
   group: b1-loadtest
   cancel-in-progress: false
