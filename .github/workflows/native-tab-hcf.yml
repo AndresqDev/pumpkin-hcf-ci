@@ -1,0 +1,117 @@
+name: Native tab for HCF
+
+# Builds the Lazarus native tab companion (cdylib) inside the exact Pumpkin
+# workspace used by the HCF B1 binary. The Rust plugin ABI is not stable across
+# sources/compilers, so a .so built against upstream can corrupt the heap when
+# loaded by the HCF binary.
+#
+# The HCF source lives in this private repo; only the tiny native-tab source is
+# downloaded from the public Lazarus repo. The workflow does not publish source.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pumpkin_ref:
+        description: 'Commit/tag del workspace HCF'
+        required: true
+        default: 'c75622e1c4852bb1311a6f8d81915b535d52a001'
+        type: string
+      lazarus_ref:
+        description: 'Commit de Lazarus-Pumpkin con native-tab/src/lib.rs'
+        required: true
+        default: '9eee467'
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  RUSTUP_TOOLCHAIN: '1.96.0'
+  RUST_MIN_STACK: '67108864'
+  RUSTFLAGS: '-A unknown_lints -C link-arg=-fuse-ld=lld'
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_RELEASE_LTO: 'false'
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
+  CARGO_BUILD_JOBS: '4'
+
+jobs:
+  build:
+    name: native_tab x86_64
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout workspace HCF
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.pumpkin_ref }}
+
+      - name: Descargar fuente native-tab
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/AndresqDev/Lazarus-Pumpkin.git lazarus-src
+          git -C lazarus-src fetch --depth 1 origin "${{ inputs.lazarus_ref }}"
+          git -C lazarus-src checkout --detach FETCH_HEAD
+          ls -lh lazarus-src/native-tab/src/lib.rs
+
+      - name: Instalar Rust y lld
+        run: |
+          set -euo pipefail
+          rustup toolchain install "${RUSTUP_TOOLCHAIN}" --profile minimal
+          rustup default "${RUSTUP_TOOLCHAIN}"
+          sudo apt-get update
+          sudo apt-get install -y lld
+          rustc --version
+          ld.lld --version | head -1
+
+      - name: Inyectar native-tab en el workspace
+        run: |
+          set -euo pipefail
+          mkdir -p native-tab/src
+          cp lazarus-src/native-tab/src/lib.rs native-tab/src/lib.rs
+          cat > native-tab/Cargo.toml <<'EOF'
+          [package]
+          name = "native_tab"
+          version = "0.1.0"
+          edition = "2024"
+          description = "Native tab list companion for Lazarus"
+
+          [lib]
+          crate-type = ["cdylib"]
+
+          [dependencies]
+          pumpkin = { path = "../crates/pumpkin" }
+          pumpkin-api-macros = { path = "../crates/pumpkin-api-macros" }
+          pumpkin-protocol = { path = "../crates/pumpkin-protocol" }
+          pumpkin-util = { path = "../crates/pumpkin-util" }
+          uuid = "1"
+          serde = { version = "1", features = ["derive"] }
+          serde_json = "1"
+          toml = "1"
+          tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+          tracing = "0.1"
+          EOF
+          if ! grep -q '"native-tab"' Cargo.toml; then
+            sed -i 's#^    "crates/pumpkin-world",$#    "crates/pumpkin-world",\n    "native-tab",#' Cargo.toml
+          fi
+          grep -n 'native-tab' Cargo.toml
+          cargo metadata --no-deps --format-version 1 >/dev/null
+
+      - name: Build release
+        run: |
+          set -euo pipefail
+          cargo build --release -p native_tab --message-format=short
+          ls -lh target/release/libnative_tab.so
+          file target/release/libnative_tab.so
+          nm -D target/release/libnative_tab.so | grep -E 'PUMPKIN_API_VERSION|plugin' | head -20 || true
+          sha256sum target/release/libnative_tab.so | tee native_tab.sha256
+
+      - name: Subir .so
+        uses: actions/upload-artifact@v4
+        with:
+          name: native_tab-hcf
+          path: |
+            target/release/libnative_tab.so
+            native_tab.sha256
+          if-no-files-found: error
+          retention-days: 7
