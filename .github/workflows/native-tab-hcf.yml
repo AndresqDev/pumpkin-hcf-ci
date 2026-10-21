@@ -19,7 +19,7 @@ on:
       lazarus_ref:
         description: 'Commit de Lazarus-Pumpkin con native-tab/src/lib.rs'
         required: true
-        default: '9eee467'
+        default: '9eee467ea8d6a999d4f7451436cc8a97b308e697'
         type: string
 
 permissions:
@@ -48,8 +48,7 @@ jobs:
       - name: Descargar fuente native-tab
         run: |
           set -euo pipefail
-          git clone --filter=blob:none --no-checkout \
-            https://github.com/AndresqDev/Lazarus-Pumpkin.git lazarus-src
+          git clone --depth 1 https://github.com/AndresqDev/Lazarus-Pumpkin.git lazarus-src
           git -C lazarus-src fetch --depth 1 origin "${{ inputs.lazarus_ref }}"
           git -C lazarus-src checkout --detach FETCH_HEAD
           ls -lh lazarus-src/native-tab/src/lib.rs
