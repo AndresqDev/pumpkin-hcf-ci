@@ -202,7 +202,9 @@ jobs:
 
   proxy:
     name: viaproxy
-    needs: server
+    # Sin `needs`: los jobs esperan por descubrimiento Tailscale. `needs`
+    # esperaria a que el job server termine (tras el keepalive), no a que este
+    # listo.
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -313,7 +315,7 @@ jobs:
 
   bots:
     name: bots shard ${{ matrix.shard }}
-    needs: proxy
+    # Sin `needs`: descubre ViaProxy por Tailscale y reintenta hasta 15 min.
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -345,7 +347,7 @@ jobs:
         run: |
           set -euo pipefail
           PROXY_IP=""
-          for _ in $(seq 1 60); do
+          for _ in $(seq 1 180); do
             for ip in $(tailscale status | grep "b1-proxy-${RUN_ID}" | grep -v offline | awk '{print $1}'); do
               if (exec 3<>/dev/tcp/$ip/25565) 2>/dev/null; then PROXY_IP=$ip; break; fi
             done
