@@ -1419,7 +1419,6 @@ impl LivingEntity {
         let world = self.entity.world.load();
         let _section = world.hcf_metrics.section(HcfSection::PushEntities);
         let entity_bb = self.entity.bounding_box.load();
-        let own_team = dyn_self.get_team();
 
         // HCF-CORE-029: HCF 1.8 disables player push collisions. The filter
         // runs before cramming and before `push`; vanilla keeps every pair.
@@ -1429,21 +1428,37 @@ impl LivingEntity {
         let block_players = (pusher_is_player && !profile.player_player_collisions_enabled())
             || (pusher_is_mob && !profile.player_mob_collisions_enabled());
         let block_mobs = pusher_is_player && !profile.player_mob_collisions_enabled();
+
+        // With both collision classes disabled, only non-player/non-mob
+        // entities can still be pushed. If the world has none, avoid scanning
+        // the (possibly large) player list on every entity tick.
+        if block_players && block_mobs && world.entities.load().is_empty() {
+            return;
+        }
+
+        let own_team = dyn_self.get_team();
         let hcf_push_allowed = |entity: &dyn EntityBase| {
             (!block_players || entity.get_player().is_none())
                 && (!block_mobs || entity.get_mob().is_none())
         };
 
-        let pushable: Vec<Arc<dyn EntityBase>> = world
-            .get_all_at_box(&entity_bb)
+        // `get_entities_at_box` skips the player list while still returning
+        // every other entity, which is exactly the candidate set when player
+        // collisions are disabled.
+        let candidates = if block_players {
+            world.get_entities_at_box(&entity_bb)
+        } else {
+            world.get_all_at_box(&entity_bb)
+        };
+        let pushable: Vec<Arc<dyn EntityBase>> = candidates
             .into_iter()
             .filter(|entity| {
                 let entity_ref = entity.get_entity();
                 entity_ref.entity_id != self.entity.entity_id
                     && !entity.is_spectator()
                     && entity.is_pushable()
-                    && is_allowed_by_team_rules(own_team.as_ref(), entity.get_team().as_ref())
                     && hcf_push_allowed(entity.as_ref())
+                    && is_allowed_by_team_rules(own_team.as_ref(), entity.get_team().as_ref())
             })
             .collect();
 

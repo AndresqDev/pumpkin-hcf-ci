@@ -333,6 +333,13 @@ impl PartialEq for World {
 
 impl Eq for World {}
 
+/// Result of checking the Java protocol versions among broadcast recipients.
+enum UniformJavaVersion {
+    NoJava,
+    Single(JavaMinecraftVersion),
+    Mixed,
+}
+
 impl World {
     pub async fn get_block_state_id_async(&self, position: &BlockPos) -> BlockStateId {
         if !self.is_in_build_limit(*position) {
@@ -973,6 +980,53 @@ impl World {
         }
     }
 
+    fn uniform_java_version<'a>(
+        players: impl Iterator<Item = &'a Arc<Player>>,
+        except: &[uuid::Uuid],
+    ) -> UniformJavaVersion {
+        let mut version = None;
+        for player in players {
+            if except.contains(&player.gameprofile.id) {
+                continue;
+            }
+            if let ClientPlatform::Java(client) = player.client.as_ref() {
+                let client_version = client.version.load();
+                match version {
+                    None => version = Some(client_version),
+                    Some(previous) if previous != client_version => {
+                        return UniformJavaVersion::Mixed;
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+        version.map_or(UniformJavaVersion::NoJava, UniformJavaVersion::Single)
+    }
+
+    fn broadcast_java_single_version<'a, P: ClientPacket>(
+        packet: &P,
+        version: JavaMinecraftVersion,
+        recipients: impl Iterator<Item = &'a JavaClient>,
+    ) {
+        let packet_data = match JavaClient::serialize_packet_for_version(packet, version) {
+            Ok(packet_data) => packet_data,
+            Err(pumpkin_protocol::ser::WritingError::UnsupportedVersion(_)) => return,
+            Err(err) => {
+                error!(
+                    "Failed to serialize packet {} for version {:?}: {}",
+                    std::any::type_name::<P>(),
+                    version,
+                    err
+                );
+                return;
+            }
+        };
+
+        for recipient in recipients {
+            recipient.try_enqueue_packet(packet_data.clone());
+        }
+    }
+
     pub(crate) fn collect_java_recipients_by_version<'a>(
         players: impl Iterator<Item = &'a Arc<Player>>,
     ) -> BTreeMap<JavaMinecraftVersion, Vec<&'a JavaClient>> {
@@ -1057,6 +1111,25 @@ impl World {
     /// **Note:** This function acquires a lock on the `current_players` map, ensuring thread safety.
     pub fn broadcast_packet_all<P: ClientPacket>(&self, packet: &P) {
         let players = self.players.load();
+
+        match Self::uniform_java_version(players.iter(), &[]) {
+            UniformJavaVersion::Single(version) => {
+                Self::broadcast_java_single_version(
+                    packet,
+                    version,
+                    players
+                        .iter()
+                        .filter_map(|player| match player.client.as_ref() {
+                            ClientPlatform::Java(client) => Some(client),
+                            ClientPlatform::Bedrock(_) => None,
+                        }),
+                );
+                return;
+            }
+            UniformJavaVersion::NoJava => return,
+            UniformJavaVersion::Mixed => {}
+        }
+
         let recipients_by_version = Self::collect_java_recipients_by_version(players.iter());
         Self::broadcast_java_grouped(packet, recipients_by_version);
     }
@@ -1211,23 +1284,62 @@ impl World {
         be_packet: &B,
     ) {
         let players = self.players.load();
-        let mut java_recipients = Vec::new();
-        let mut bedrock_recipients = Vec::new();
 
-        for p in players.iter() {
-            if except.contains(&p.gameprofile.id) {
-                continue;
+        // Movement/rotation packets dominate the broadcast path. Almost every
+        // server has a single Java protocol version among the recipients, so
+        // skip the `BTreeMap`/`Vec` grouping and serialize the Java packet once.
+        // Mixed-version servers fall back to the general path below.
+        let java_version = match Self::uniform_java_version(players.iter(), except) {
+            UniformJavaVersion::Single(version) => Some(version),
+            UniformJavaVersion::NoJava => None,
+            UniformJavaVersion::Mixed => {
+                let mut java_recipients = Vec::new();
+                let mut bedrock_recipients = Vec::new();
+
+                for p in players.iter() {
+                    if except.contains(&p.gameprofile.id) {
+                        continue;
+                    }
+                    match p.client.as_ref() {
+                        ClientPlatform::Java(_) => java_recipients.push(p),
+                        ClientPlatform::Bedrock(be_client) => bedrock_recipients.push(be_client),
+                    }
+                }
+
+                let recipients_by_version =
+                    Self::collect_java_recipients_by_version(java_recipients.into_iter());
+                Self::broadcast_java_grouped(je_packet, recipients_by_version);
+                Self::broadcast_bedrock_grouped(be_packet, bedrock_recipients.into_iter());
+                return;
             }
-            match p.client.as_ref() {
-                ClientPlatform::Java(_) => java_recipients.push(p),
-                ClientPlatform::Bedrock(be_client) => bedrock_recipients.push(be_client),
-            }
+        };
+
+        if let Some(version) = java_version {
+            Self::broadcast_java_single_version(
+                je_packet,
+                version,
+                players.iter().filter_map(|player| {
+                    if except.contains(&player.gameprofile.id) {
+                        return None;
+                    }
+                    match player.client.as_ref() {
+                        ClientPlatform::Java(client) => Some(client),
+                        ClientPlatform::Bedrock(_) => None,
+                    }
+                }),
+            );
         }
 
-        let recipients_by_version =
-            Self::collect_java_recipients_by_version(java_recipients.into_iter());
-        Self::broadcast_java_grouped(je_packet, recipients_by_version);
-        Self::broadcast_bedrock_grouped(be_packet, bedrock_recipients.into_iter());
+        // Bedrock is rare in the HCF profile and serialization is
+        // per-client anyway; avoid allocating a recipient vector for it.
+        for player in players.iter() {
+            if except.contains(&player.gameprofile.id) {
+                continue;
+            }
+            if let ClientPlatform::Bedrock(client) = player.client.as_ref() {
+                Self::broadcast_bedrock_grouped(be_packet, std::iter::once(client));
+            }
+        }
     }
 
     /// Broadcasts the skin layers of a player, encoding the metadata for each Java client's own
@@ -1292,6 +1404,31 @@ impl World {
     /// **Note:** This function acquires a lock on the `current_players` map, ensuring thread safety.
     pub fn broadcast_packet_except<P: ClientPacket>(&self, except: &[uuid::Uuid], packet: &P) {
         let players = self.players.load();
+
+        // Head rotation and position-sync packets hit this path for every
+        // moving player. A uniform protocol version lets us serialize once and
+        // skip the intermediate map/vector; mixed versions keep the old path.
+        match Self::uniform_java_version(players.iter(), except) {
+            UniformJavaVersion::Single(version) => {
+                Self::broadcast_java_single_version(
+                    packet,
+                    version,
+                    players.iter().filter_map(|player| {
+                        if except.contains(&player.gameprofile.id) {
+                            return None;
+                        }
+                        match player.client.as_ref() {
+                            ClientPlatform::Java(client) => Some(client),
+                            ClientPlatform::Bedrock(_) => None,
+                        }
+                    }),
+                );
+                return;
+            }
+            UniformJavaVersion::NoJava => return,
+            UniformJavaVersion::Mixed => {}
+        }
+
         let recipients_by_version = Self::collect_java_recipients_by_version(
             players
                 .iter()
@@ -4872,15 +5009,18 @@ impl World {
         let entities_guard = self.entities.load();
         let players_guard = self.players.load();
 
+        // Filter before cloning: collision/push queries hit this path every
+        // tick and most entities in a world are far outside the queried box.
         entities_guard
             .iter()
-            .map(|e| e.clone() as Arc<dyn EntityBase>)
+            .filter(|entity| entity.get_entity().bounding_box.load().intersects(aabb))
+            .map(|entity| entity.clone() as Arc<dyn EntityBase>)
             .chain(
                 players_guard
                     .iter()
-                    .map(|p| p.clone() as Arc<dyn EntityBase>),
+                    .filter(|player| player.get_entity().bounding_box.load().intersects(aabb))
+                    .map(|player| player.clone() as Arc<dyn EntityBase>),
             )
-            .filter(|entity| entity.get_entity().bounding_box.load().intersects(aabb))
             .collect()
     }
 

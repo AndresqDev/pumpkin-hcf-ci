@@ -155,6 +155,7 @@ impl HcfFeatureSet {
 #[derive(Clone, Debug)]
 pub struct HcfProfile {
     enabled: bool,
+    metrics: bool,
     profile: String,
     enabled_features: HcfFeatureSet,
     disabled_features: HcfFeatureSet,
@@ -355,6 +356,10 @@ impl HcfProfile {
 
         Self {
             enabled: config.enabled,
+            // Metrics are an explicit diagnostic opt-in. Keeping them off by
+            // default removes timers/atomics from every player, movement and
+            // entity tick in normal HCF play.
+            metrics: config.enabled && config.metrics.unwrap_or(false),
             profile: config.profile.clone(),
             enabled_features,
             disabled_features,
@@ -371,6 +376,13 @@ impl HcfProfile {
     #[must_use]
     pub const fn enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// Returns whether the opt-in HCF tick diagnostics are enabled.
+    #[inline]
+    #[must_use]
+    pub const fn metrics_enabled(&self) -> bool {
+        self.metrics
     }
 
     /// Returns the configured profile name.
@@ -576,6 +588,7 @@ mod tests {
         let profile = HcfProfile::from_config(&HcfConfig::default());
 
         assert!(!profile.enabled());
+        assert!(!profile.metrics_enabled());
         assert!(!profile.disabled(HcfFeature::Weather));
         assert!(!profile.disabled(HcfFeature::Raids));
         assert!(!profile.fast_chunks());
@@ -599,6 +612,7 @@ mod tests {
         let profile = HcfProfile::from_config(&config);
 
         assert!(profile.enabled());
+        assert!(!profile.metrics_enabled());
         assert_eq!(profile.name(), "hcf-1.8");
         assert!(profile.disabled(HcfFeature::MobAi));
         assert!(profile.disabled(HcfFeature::NaturalSpawning));
@@ -617,6 +631,23 @@ mod tests {
         assert!(profile.scheduler_guard());
         assert!(!profile.player_player_collisions_enabled());
         assert!(!profile.player_mob_collisions_enabled());
+    }
+
+    #[test]
+    fn metrics_are_an_explicit_diagnostic_opt_in() {
+        let config = HcfConfig {
+            enabled: true,
+            metrics: Some(true),
+            ..HcfConfig::default()
+        };
+        assert!(HcfProfile::from_config(&config).metrics_enabled());
+
+        let disabled_config = HcfConfig {
+            enabled: false,
+            metrics: Some(true),
+            ..HcfConfig::default()
+        };
+        assert!(!HcfProfile::from_config(&disabled_config).metrics_enabled());
     }
 
     #[test]

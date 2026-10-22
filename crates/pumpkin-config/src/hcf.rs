@@ -13,6 +13,12 @@ const DEFAULT_HCF_PROFILE: &str = "hcf-1.8";
 pub struct HcfConfig {
     /// Whether the HCF profile is active.
     pub enabled: bool,
+    /// Emit the per-section `HCF_METRIC` diagnostics.
+    ///
+    /// Instrumentation is deliberately opt-in: `Instant::now()` and the
+    /// per-packet atomic updates are useful for A/B runs but are pure overhead
+    /// for a production server. It has no effect when `enabled` is `false`.
+    pub metrics: Option<bool>,
     /// Name of the profile that supplies the defaults.
     pub profile: String,
 
@@ -69,6 +75,7 @@ impl Default for HcfConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            metrics: None,
             profile: DEFAULT_HCF_PROFILE.to_string(),
             only_overworld: None,
             disable_mob_ai: None,

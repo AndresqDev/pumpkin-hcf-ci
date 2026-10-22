@@ -298,7 +298,7 @@ impl Server {
             );
         }
 
-        let hcf_metrics = Arc::new(hcf_metrics::HcfMetrics::new(advanced_config.hcf.enabled));
+        let hcf_metrics = Arc::new(hcf_metrics::HcfMetrics::new(hcf_profile.metrics_enabled()));
 
         let server = Self {
             basic_config,

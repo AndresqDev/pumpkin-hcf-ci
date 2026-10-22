@@ -208,24 +208,31 @@ impl TrackedEntity {
     /// HCF-CORE-022a: same pairing contract as [`Self::update_player`], but reading the
     /// view distance, watched section and chunk readiness from the per-pass player context.
     ///
-    /// This keeps the individual `update_player` contract (and its per-pair lock) untouched for
+    /// The entity position, chunk and effective tracking range are loaded once for the whole
+    /// pass: a player entity has one hundred candidate recipients per tick, so repeating those
+    /// loads and the passenger lock for every pair is measurable overhead. This keeps the
+    /// individual `update_player` contract (and its per-pair lock) untouched for
     /// `add_entity`/`pair_new_player_with_tracked_entities`.
-    fn update_player_ctx(&self, ctx: &mut PlayerTrackerContext) {
-        if ctx.player.get_entity().entity_id == self.entity_id {
+    fn update_player_ctx_cached(
+        &self,
+        ctx: &mut PlayerTrackerContext,
+        effective_range: u32,
+        entity_pos: Vector3<f64>,
+        entity_chunk: Vector2<i32>,
+    ) {
+        let player_entity = ctx.player.get_entity();
+        if player_entity.entity_id == self.entity_id {
             return;
         }
 
-        let player_pos = ctx.player.get_entity().pos.load();
-        let entity_pos = self.entity.get_entity().pos.load();
+        let player_pos = player_entity.pos.load();
         let dx = player_pos.x - entity_pos.x;
         let dz = player_pos.z - entity_pos.z;
         let dist_sq = dx.mul_add(dx, dz * dz);
 
-        let effective_range = self.get_effective_range();
         let visible_range_blocks = f64::from((effective_range as i32).min(ctx.view_distance) * 16);
         let range_sq = visible_range_blocks * visible_range_blocks;
 
-        let entity_chunk = self.entity.get_entity().chunk_pos.load();
         let in_view = ctx
             .watched_section
             .is_within_distance(entity_chunk.x, entity_chunk.y);
@@ -656,11 +663,21 @@ impl EntityTracker {
         // HCF-CORE-022a: one context (and at most one `chunk_sender` lock) for the whole batch.
         let mut ctx = PlayerTrackerContext::new(player.clone());
         for entry in &self.entity_map {
-            if *entry.key() != entity_id
-                && chunks.contains(&entry.value().entity.get_entity().chunk_pos.load())
-            {
-                entry.value().update_player_ctx(&mut ctx);
+            let tracked = entry.value();
+            if *entry.key() == entity_id {
+                continue;
             }
+            let entity = tracked.entity.get_entity();
+            let entity_chunk = entity.chunk_pos.load();
+            if !chunks.contains(&entity_chunk) {
+                continue;
+            }
+            tracked.update_player_ctx_cached(
+                &mut ctx,
+                tracked.get_effective_range(),
+                entity.pos.load(),
+                entity_chunk,
+            );
         }
     }
 
@@ -693,6 +710,11 @@ impl EntityTracker {
         let mut all_players_contexts: Option<Vec<PlayerTrackerContext>> = None;
         let mut moved_player_ctx = PlayerTrackerContext::new(player.clone());
         for entry in &self.entity_map {
+            let tracked = entry.value();
+            let entity = tracked.entity.get_entity();
+            let entity_pos = entity.pos.load();
+            let entity_chunk = entity.chunk_pos.load();
+            let effective_range = tracked.get_effective_range();
             if *entry.key() == entity_id {
                 let contexts = all_players_contexts.get_or_insert_with(|| {
                     players
@@ -701,10 +723,20 @@ impl EntityTracker {
                         .collect()
                 });
                 for ctx in contexts {
-                    entry.value().update_player_ctx(ctx);
+                    tracked.update_player_ctx_cached(
+                        ctx,
+                        effective_range,
+                        entity_pos,
+                        entity_chunk,
+                    );
                 }
             } else {
-                entry.value().update_player_ctx(&mut moved_player_ctx);
+                tracked.update_player_ctx_cached(
+                    &mut moved_player_ctx,
+                    effective_range,
+                    entity_pos,
+                    entity_chunk,
+                );
             }
         }
     }
@@ -802,8 +834,17 @@ impl EntityTracker {
             );
             let old_pos = tracked.last_section_pos.load();
             if old_pos != new_pos {
+                let entity = tracked.entity.get_entity();
+                let entity_pos = entity.pos.load();
+                let entity_chunk = entity.chunk_pos.load();
+                let effective_range = tracked.get_effective_range();
                 for ctx in &mut contexts[..snapshot_contexts] {
-                    tracked.update_player_ctx(ctx);
+                    tracked.update_player_ctx_cached(
+                        ctx,
+                        effective_range,
+                        entity_pos,
+                        entity_chunk,
+                    );
                 }
                 if let Some(player) = tracked.entity.get_player() {
                     let uuid = player.gameprofile.id;
@@ -826,8 +867,18 @@ impl EntityTracker {
 
         if !moved_contexts.is_empty() {
             for entry in &self.entity_map {
+                let tracked = entry.value();
+                let entity = tracked.entity.get_entity();
+                let entity_pos = entity.pos.load();
+                let entity_chunk = entity.chunk_pos.load();
+                let effective_range = tracked.get_effective_range();
                 for &index in &moved_contexts {
-                    entry.value().update_player_ctx(&mut contexts[index]);
+                    tracked.update_player_ctx_cached(
+                        &mut contexts[index],
+                        effective_range,
+                        entity_pos,
+                        entity_chunk,
+                    );
                 }
             }
         }
