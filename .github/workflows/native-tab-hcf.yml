@@ -106,7 +106,7 @@ jobs:
           sha256sum target/release/libnative_tab.so | tee native_tab.sha256
 
       - name: Subir .so
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: native_tab-hcf
           path: |
