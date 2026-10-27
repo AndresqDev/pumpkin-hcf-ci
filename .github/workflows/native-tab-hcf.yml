@@ -41,7 +41,7 @@ jobs:
     timeout-minutes: 120
     steps:
       - name: Checkout workspace HCF
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.pumpkin_ref }}
 
