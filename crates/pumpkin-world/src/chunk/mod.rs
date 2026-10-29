@@ -979,7 +979,7 @@ pub enum ChunkSerializingError {
 
 #[cfg(test)]
 mod tests {
-    use super::{ChunkData, ChunkSections, LightContainer};
+    use super::{ChunkData, ChunkSections};
     use crate::chunk::palette::BlockPalette;
     use pumpkin_data::chunk::ChunkStatus;
     use pumpkin_data::dimension::Dimension;
@@ -1059,8 +1059,8 @@ mod tests {
         let light = chunk.light_engine.lock().unwrap();
         assert_eq!(light.sky_light.len(), 24);
         assert_eq!(light.block_light.len(), 24);
-        assert!(matches!(light.sky_light[0], LightContainer::Full(_)));
-        assert!(matches!(light.block_light[0], LightContainer::Empty(0)));
+        assert!(!light.sky_light[0].is_empty());
+        assert!(light.block_light[0].is_empty());
     }
 
     #[test]

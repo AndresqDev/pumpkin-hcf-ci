@@ -43,9 +43,9 @@ pub fn get_pregenerated_world_gen(
     seed: Seed,
     dimension: Dimension,
 ) -> Box<generator::WorldGenerator> {
-    Box::new(generator::WorldGenerator::PreGenerated(
+    Box::new(generator::WorldGenerator::PreGenerated(Box::new(
         PreGeneratedGenerator::new(seed, dimension),
-    ))
+    )))
 }
 
 #[must_use]

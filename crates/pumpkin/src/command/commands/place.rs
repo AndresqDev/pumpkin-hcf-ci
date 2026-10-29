@@ -21,7 +21,7 @@ use crate::command::argument_types::pool::PoolNameArgumentType;
 use crate::command::argument_types::structure::StructureNameArgumentType;
 use crate::command::argument_types::template::TemplateNameArgumentType;
 use crate::command::context::command_context::CommandContext;
-use crate::command::errors::error_types::CommandErrorType;
+use crate::command::errors::error_types::{CommandErrorType, LiteralCommandErrorType};
 use crate::command::node::dispatcher::CommandDispatcher;
 use crate::command::node::{CommandExecutor, CommandExecutorResult};
 use crate::world::block_placer::WorldBlockPlacer;
@@ -60,6 +60,8 @@ static FEATURE_INVALID: CommandErrorType<1> = CommandErrorType::new(
     translation::java::COMMANDS_PLACE_FEATURE_INVALID,
     "commands.place.feature.invalid",
 );
+static WORLDGEN_DISABLED: LiteralCommandErrorType =
+    LiteralCommandErrorType::new("World generation is disabled");
 
 const CHUNK_DIM: i32 = 16;
 
@@ -180,6 +182,10 @@ struct PlaceJigsawExecutor;
 
 impl CommandExecutor for PlaceJigsawExecutor {
     fn execute(&self, context: &CommandContext) -> CommandExecutorResult {
+        if context.source.server().hcf_profile().worldgen_disabled() {
+            return Err(WORLDGEN_DISABLED.create_without_context());
+        }
+
         let pool = context.get_argument::<Identifier>("pool")?.to_string();
         let target = context.get_argument::<Identifier>("target")?.to_string();
         let max_depth = *context.get_argument::<i32>("max_depth")?;
@@ -270,6 +276,10 @@ struct PlaceStructureExecutor;
 #[allow(clippy::too_many_lines)]
 impl CommandExecutor for PlaceStructureExecutor {
     fn execute(&self, context: &CommandContext) -> CommandExecutorResult {
+        if context.source.server().hcf_profile().worldgen_disabled() {
+            return Err(WORLDGEN_DISABLED.create_without_context());
+        }
+
         let structure_id = context.get_argument::<Identifier>("structure")?;
         let structure_name = structure_id.to_string();
 
@@ -530,6 +540,10 @@ struct PlaceFeatureExecutor;
 
 impl CommandExecutor for PlaceFeatureExecutor {
     fn execute(&self, context: &CommandContext) -> CommandExecutorResult {
+        if context.source.server().hcf_profile().worldgen_disabled() {
+            return Err(WORLDGEN_DISABLED.create_without_context());
+        }
+
         let feature_id = context.get_argument::<Identifier>("feature")?;
         let feature_name = feature_id.to_string();
 

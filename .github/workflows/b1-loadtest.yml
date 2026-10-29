@@ -85,6 +85,9 @@ jobs:
           cp loadtest/pumpkin.toml server/pumpkin.toml
           if [ "${HCF}" = "true" ]; then
             printf '\n[hcf]\nenabled = true\nprofile = "hcf-1.8"\n' >> server/pumpkin.toml
+            # B1 usa un mundo natural recién creado; worldgen off es el default
+            # de producción pero se desactiva en este harness de rendimiento.
+            printf 'disable_worldgen = false\n' >> server/pumpkin.toml
           else
             printf '\n[hcf]\nenabled = false\n' >> server/pumpkin.toml
           fi

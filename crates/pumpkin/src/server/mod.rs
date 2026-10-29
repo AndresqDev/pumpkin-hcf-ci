@@ -186,7 +186,7 @@ impl Server {
         // `advanced_config` is moved into the server. With HCF disabled this
         // only records `enabled = false` and does not alter any code path.
         let hcf_profile = Arc::new(hcf::HcfProfile::from_config(&advanced_config.hcf));
-        let generate_terrain = !hcf_profile.disabled(hcf::HcfFeature::WorldGen);
+        let generate_terrain = !hcf_profile.worldgen_disabled();
         if !generate_terrain {
             info!(
                 "HCF world generation is disabled: only pre-generated chunks will be loaded; missing chunks will be served as void"
@@ -533,7 +533,7 @@ impl Server {
         let config = Arc::new(self.advanced_config.world.clone());
         let seed = self.level_info.load().world_gen_settings.seed;
 
-        let generate_terrain = !self.hcf_profile.disabled(hcf::HcfFeature::WorldGen);
+        let generate_terrain = !self.hcf_profile.worldgen_disabled();
         let level = pumpkin_world::dimension::into_level(
             dimension.clone(),
             &config,

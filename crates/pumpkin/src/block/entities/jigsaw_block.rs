@@ -75,6 +75,10 @@ impl JigsawBlockEntity {
     }
 
     pub fn generate(&self, world: &Arc<World>, levels: i32, keep_jigsaws: bool) {
+        if world.hcf_profile.worldgen_disabled() {
+            return;
+        }
+
         let pool = self
             .pool
             .lock()

@@ -84,7 +84,7 @@ pub enum WorldGenerator {
     Custom(Arc<dyn CustomChunkGenerator>),
     /// Load-only mode: existing chunks come from disk and missing chunks are
     /// served as void without running the generation pipeline.
-    PreGenerated(PreGeneratedGenerator),
+    PreGenerated(Box<PreGeneratedGenerator>),
 }
 
 impl WorldGenerator {
