@@ -11,6 +11,13 @@ pub fn into_level(
     level_config: &LevelConfig,
     base_directory: PathBuf,
     seed: i64,
+    generate_terrain: bool,
 ) -> Arc<Level> {
-    Level::from_root_folder(level_config, base_directory, seed, dimension)
+    Level::from_root_folder(
+        level_config,
+        base_directory,
+        seed,
+        dimension,
+        generate_terrain,
+    )
 }

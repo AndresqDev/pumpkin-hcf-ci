@@ -49,6 +49,12 @@ pub struct HcfConfig {
     pub disable_warden: Option<bool>,
     /// Disables map updates when `true`.
     pub disable_maps: Option<bool>,
+    /// Disables runtime world generation when `true`.
+    ///
+    /// The server only loads chunks that already exist on disk. Missing chunks
+    /// are served as empty void chunks and are not written back. A pre-generated
+    /// world with a valid `level.dat` is required.
+    pub disable_worldgen: Option<bool>,
 
     /// Enables the HCF chunk tick fast path when `true`.
     pub chunk_tick_fast_path: Option<bool>,
@@ -90,6 +96,7 @@ impl Default for HcfConfig {
             disable_chat_signing: None,
             disable_warden: None,
             disable_maps: None,
+            disable_worldgen: None,
             chunk_tick_fast_path: None,
             player_tick_fast_path: None,
             entity_tracker_fast_path: None,

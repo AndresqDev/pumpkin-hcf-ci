@@ -18,7 +18,7 @@ pub mod rule;
 pub mod structure;
 mod surface;
 
-use generator::VanillaGenerator;
+use generator::{PreGeneratedGenerator, VanillaGenerator};
 use pumpkin_data::dimension::Dimension;
 use pumpkin_util::{
     random::xoroshiro128::{Xoroshiro, XoroshiroSplitter},
@@ -34,6 +34,18 @@ pub fn get_world_gen(
     flat_biome: String,
 ) -> Box<generator::WorldGenerator> {
     get_world_gen_with_settings(seed, dimension, is_flat, flat_layers, flat_biome, None)
+}
+
+/// Creates a load-only generator. Existing chunks are read from disk; chunks
+/// missing from disk are served as void by the chunk system.
+#[must_use]
+pub fn get_pregenerated_world_gen(
+    seed: Seed,
+    dimension: Dimension,
+) -> Box<generator::WorldGenerator> {
+    Box::new(generator::WorldGenerator::PreGenerated(
+        PreGeneratedGenerator::new(seed, dimension),
+    ))
 }
 
 #[must_use]

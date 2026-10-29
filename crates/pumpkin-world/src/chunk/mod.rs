@@ -3,6 +3,7 @@ use crate::tick::scheduler::ChunkTickScheduler;
 use palette::{BiomePalette, BlockPalette, has_random_ticking_fluid};
 use pumpkin_data::block_properties::{blocks_movement, has_random_ticks, is_air};
 use pumpkin_data::chunk::ChunkStatus;
+use pumpkin_data::dimension::Dimension;
 use pumpkin_data::fluid::Fluid;
 use pumpkin_data::tag::Block::MINECRAFT_LEAVES;
 use pumpkin_data::{Block, BlockState, BlockStateId};
@@ -626,6 +627,45 @@ impl ChunkData {
         std::sync::Arc::new(Self::empty(x, z))
     }
 
+    /// Builds a full, empty chunk for the given dimension.
+    ///
+    /// This is the fast path used by pre-generated worlds when a chunk is
+    /// missing from disk: all sections are air, sky light is full and the chunk
+    /// is not marked dirty so it is never written back over the pre-generated
+    /// region files.
+    #[must_use]
+    pub fn empty_for_dimension(x: i32, z: i32, dimension: &Dimension) -> Self {
+        let section_count = dimension.height as usize / BlockPalette::SIZE;
+        // Void chunks are fully sky-lit. `Empty` values are not serialized, so
+        // use explicit full arrays for sky light; block light can stay empty.
+        let sky_light = (0..section_count)
+            .map(|_| LightContainer::new_filled(15))
+            .collect::<Box<[_]>>();
+        let block_light = (0..section_count)
+            .map(|_| LightContainer::new_empty(0))
+            .collect::<Box<[_]>>();
+
+        Self {
+            section: ChunkSections::new(section_count, dimension.min_y),
+            heightmap: std::sync::Mutex::new(ChunkHeightmaps::default()),
+            x,
+            z,
+            block_ticks: ChunkTickScheduler::default(),
+            fluid_ticks: ChunkTickScheduler::default(),
+            pending_block_entities: std::sync::Mutex::new(FxHashMap::default()),
+            light_engine: std::sync::Mutex::new(ChunkLight {
+                sky_light,
+                block_light,
+            }),
+            light_populated: AtomicBool::new(true),
+            status: ChunkStatus::Full,
+            blending_data: None,
+            dirty: AtomicBool::new(false),
+            inhabited_time: AtomicU64::new(0),
+            custom_data: std::sync::Mutex::new(NbtCompound::new()),
+        }
+    }
+
     /// Returns the replaced block state ID
     pub fn set_block_absolute_y(
         &self,
@@ -939,9 +979,12 @@ pub enum ChunkSerializingError {
 
 #[cfg(test)]
 mod tests {
-    use super::ChunkSections;
+    use super::{ChunkData, ChunkSections, LightContainer};
     use crate::chunk::palette::BlockPalette;
+    use pumpkin_data::chunk::ChunkStatus;
+    use pumpkin_data::dimension::Dimension;
     use pumpkin_data::{Block, block_properties::has_random_ticks};
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn random_tick_cache_initializes_from_palette_contents() {
@@ -1001,6 +1044,23 @@ mod tests {
             assert!(cache[0].random_ticking_fluid_count > 0);
             assert!(cache[0].is_randomly_ticking());
         }
+    }
+
+    #[test]
+    fn empty_for_dimension_uses_dimension_bounds_and_skylight() {
+        let chunk = ChunkData::empty_for_dimension(1, -2, &Dimension::OVERWORLD);
+
+        assert_eq!(chunk.section.count, 24);
+        assert_eq!(chunk.section.min_y, -64);
+        assert_eq!(chunk.status, ChunkStatus::Full);
+        assert!(!chunk.dirty.load(Ordering::Relaxed));
+        assert!(chunk.light_populated.load(Ordering::Relaxed));
+
+        let light = chunk.light_engine.lock().unwrap();
+        assert_eq!(light.sky_light.len(), 24);
+        assert_eq!(light.block_light.len(), 24);
+        assert!(matches!(light.sky_light[0], LightContainer::Full(_)));
+        assert!(matches!(light.block_light[0], LightContainer::Empty(0)));
     }
 
     #[test]

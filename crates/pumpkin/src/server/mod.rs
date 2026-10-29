@@ -182,6 +182,17 @@ impl Server {
             advanced_config.commands.broadcast_console_to_ops,
         );
 
+        // HCF-CORE-001: build the immutable profile once, before
+        // `advanced_config` is moved into the server. With HCF disabled this
+        // only records `enabled = false` and does not alter any code path.
+        let hcf_profile = Arc::new(hcf::HcfProfile::from_config(&advanced_config.hcf));
+        let generate_terrain = !hcf_profile.disabled(hcf::HcfFeature::WorldGen);
+        if !generate_terrain {
+            info!(
+                "HCF world generation is disabled: only pre-generated chunks will be loaded; missing chunks will be served as void"
+            );
+        }
+
         let world_path = basic_config.get_world_path();
 
         let block_registry = super::block::registry::default_registry();
@@ -198,6 +209,13 @@ impl Server {
                 level_info
             }
             Err(WorldInfoError::InfoNotFound) => {
+                if !generate_terrain {
+                    error!(
+                        "No {LEVEL_DAT_FILE_NAME} in {} and HCF world generation is disabled. Refusing to create a new void world; provide a pre-generated world or set hcf.disable_worldgen = false.",
+                        world_path.display()
+                    );
+                    std::process::exit(1);
+                }
                 warn!(
                     "No {LEVEL_DAT_FILE_NAME} in {}, creating a new world with seed {}",
                     world_path.display(),
@@ -258,11 +276,6 @@ impl Server {
         let white_list = AtomicBool::new(basic_config.white_list);
 
         let tick_rate_manager = Arc::new(ServerTickRateManager::new(basic_config.tps));
-
-        // HCF-CORE-001: build the immutable profile once, before
-        // `advanced_config` is moved into the server. With HCF disabled this
-        // only records `enabled = false` and does not alter any code path.
-        let hcf_profile = Arc::new(hcf::HcfProfile::from_config(&advanced_config.hcf));
 
         // HCF-CORE-010: the HCF profile loads only the overworld. The vanilla
         // `allow_nether`/`allow_end` path below is preserved when it is off.
@@ -419,7 +432,13 @@ impl Server {
                     .to_pretty_console()
             );
             let config = Arc::new(server.advanced_config.world.clone());
-            let level = into_level(dim.clone(), &config, world_path.clone(), seed);
+            let level = into_level(
+                dim.clone(),
+                &config,
+                world_path.clone(),
+                seed,
+                generate_terrain,
+            );
             let world = Arc::new(World::load(
                 level.clone(),
                 server.level_info.clone(),
@@ -514,8 +533,14 @@ impl Server {
         let config = Arc::new(self.advanced_config.world.clone());
         let seed = self.level_info.load().world_gen_settings.seed;
 
-        let level =
-            pumpkin_world::dimension::into_level(dimension.clone(), &config, world_path, seed);
+        let generate_terrain = !self.hcf_profile.disabled(hcf::HcfFeature::WorldGen);
+        let level = pumpkin_world::dimension::into_level(
+            dimension.clone(),
+            &config,
+            world_path,
+            seed,
+            generate_terrain,
+        );
         let world: World = World::load(level.clone(), l_info, dimension, registry, weak);
         let world = Arc::new(world);
         let portal: Arc<dyn WorldPortalExt> = Arc::new(WorldPortal(world.clone()));

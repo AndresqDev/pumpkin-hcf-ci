@@ -47,8 +47,9 @@ pub fn find_closest_biome_3d(
             vertical_step,
         ),
         // Plugin generators only expose biomes by generating a whole chunk, so
-        // there is no sampler to search against.
-        WorldGenerator::Custom(_) => None,
+        // there is no sampler to search against. Pre-generated mode has no
+        // terrain sampler either: loaded chunks keep their saved biomes.
+        WorldGenerator::Custom(_) | WorldGenerator::PreGenerated(_) => None,
     }
 }
 

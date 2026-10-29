@@ -24,6 +24,9 @@ use crate::chunk_system::StagedChunkEnum;
 use crate::generation::proto_chunk::ProtoChunk;
 
 pub mod flat;
+pub mod pre_generated;
+
+pub use pre_generated::PreGeneratedGenerator;
 
 #[derive(Clone, Debug)]
 pub struct FlatLayer {
@@ -79,6 +82,9 @@ pub enum WorldGenerator {
     Noise(Box<VanillaGenerator>),
     Flat(Box<flat::FlatGenerator>),
     Custom(Arc<dyn CustomChunkGenerator>),
+    /// Load-only mode: existing chunks come from disk and missing chunks are
+    /// served as void without running the generation pipeline.
+    PreGenerated(PreGeneratedGenerator),
 }
 
 impl WorldGenerator {
@@ -88,6 +94,7 @@ impl WorldGenerator {
             Self::Noise(noise_gen) => &noise_gen.dimension,
             Self::Flat(flat_gen) => &flat_gen.dimension,
             Self::Custom(custom_gen) => custom_gen.dimension(),
+            Self::PreGenerated(pre_generated) => pre_generated.dimension(),
         }
     }
 
@@ -97,7 +104,14 @@ impl WorldGenerator {
             Self::Noise(noise_gen) => noise_gen.random_config.seed,
             Self::Flat(flat_gen) => flat_gen.seed,
             Self::Custom(custom_gen) => custom_gen.seed(),
+            Self::PreGenerated(pre_generated) => pre_generated.seed(),
         }
+    }
+
+    /// Returns whether this generator only loads pre-generated chunks.
+    #[must_use]
+    pub const fn is_pregenerated(&self) -> bool {
+        matches!(self, Self::PreGenerated(_))
     }
 
     #[must_use]
@@ -106,7 +120,7 @@ impl WorldGenerator {
     ) -> Option<&crate::generation::structure::placement::GlobalStructureCache> {
         match self {
             Self::Noise(noise_gen) => Some(&noise_gen.global_structure_cache),
-            Self::Flat(_) => None,
+            Self::Flat(_) | Self::PreGenerated(_) => None,
             Self::Custom(custom_gen) => custom_gen.global_structure_cache(),
         }
     }
@@ -255,6 +269,19 @@ impl GeneratorInit for VanillaGenerator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pregenerated_generator_has_no_structure_cache_or_spawn_search() {
+        let generator =
+            crate::generation::get_pregenerated_world_gen(Seed(42), Dimension::OVERWORLD);
+
+        assert!(generator.is_pregenerated());
+        assert!(generator.global_structure_cache().is_none());
+        assert_eq!(
+            generator.find_spawn_position(),
+            pumpkin_util::math::position::BlockPos::ZERO
+        );
+    }
 
     #[test]
     fn vanilla_generator_settings() {

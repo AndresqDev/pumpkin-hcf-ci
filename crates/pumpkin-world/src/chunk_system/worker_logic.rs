@@ -2,6 +2,7 @@ use super::chunk_state::{Chunk, StagedChunkEnum};
 use super::generation_cache::Cache;
 use super::{ChunkPos, IOLock};
 use crate::ProtoChunk;
+use crate::chunk::ChunkData;
 use crate::chunk::format::LightContainer;
 use crate::chunk::io::LoadedData::Loaded;
 use crate::chunk::io::{FileIO, LoadedData, run_blocking};
@@ -156,17 +157,20 @@ pub async fn io_read_work(
                     }
                 }
                 LoadedData::Missing(pos) | LoadedData::Error((pos, _)) => {
-                    if send
-                        .send((
-                            pos,
-                            RecvChunk::IO(Chunk::Proto(Box::new(ProtoChunk::new(
-                                pos.x,
-                                pos.y,
-                                &level.world_gen.load(),
-                            )))),
-                        ))
-                        .is_err()
-                    {
+                    let generator = level.world_gen.load();
+                    let chunk = if generator.is_pregenerated() {
+                        debug!(
+                            "Chunk {pos:?} is missing from disk; serving an empty pre-generated chunk"
+                        );
+                        Chunk::Level(std::sync::Arc::new(ChunkData::empty_for_dimension(
+                            pos.x,
+                            pos.y,
+                            generator.dimension(),
+                        )))
+                    } else {
+                        Chunk::Proto(Box::new(ProtoChunk::new(pos.x, pos.y, &generator)))
+                    };
+                    if send.send((pos, RecvChunk::IO(chunk))).is_err() {
                         break;
                     }
                 }

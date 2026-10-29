@@ -71,11 +71,13 @@ pub enum HcfFeature {
     PlayerPlayerCollisions,
     /// Player-mob collisions.
     PlayerMobCollisions,
+    /// Runtime world generation.
+    WorldGen,
 }
 
 impl HcfFeature {
     /// Number of features known to this ABI.
-    pub const COUNT: u8 = 21;
+    pub const COUNT: u8 = 22;
 
     /// Returns the one-hot bit mask for this feature.
     #[inline]
@@ -198,6 +200,7 @@ impl HcfProfile {
             HcfFeature::ChatSigning,
             HcfFeature::Warden,
             HcfFeature::Maps,
+            HcfFeature::WorldGen,
             HcfFeature::PlayerPlayerCollisions,
             HcfFeature::PlayerMobCollisions,
         ] {
@@ -298,6 +301,12 @@ impl HcfProfile {
             &mut disabled_features,
             config.disable_maps,
             HcfFeature::Maps,
+            true,
+        );
+        resolve_disabled(
+            &mut disabled_features,
+            config.disable_worldgen,
+            HcfFeature::WorldGen,
             true,
         );
 
@@ -473,6 +482,17 @@ impl HcfProfile {
         self.fast_path(HcfFeature::Dimensions)
     }
 
+    /// Returns whether runtime world generation is disabled.
+    ///
+    /// When `true`, worlds must already exist on disk: the core never runs the
+    /// vanilla terrain/structure pipeline and missing chunks are served as
+    /// empty void chunks. Always `false` when HCF is disabled.
+    #[inline]
+    #[must_use]
+    pub const fn worldgen_disabled(&self) -> bool {
+        self.disabled(HcfFeature::WorldGen)
+    }
+
     /// Returns whether player-player collisions are enabled.
     ///
     /// Vanilla collisions are always enabled when HCF is disabled.
@@ -594,6 +614,7 @@ mod tests {
         assert!(!profile.fast_chunks());
         assert!(!profile.fast_players());
         assert!(!profile.only_overworld());
+        assert!(!profile.worldgen_disabled());
         assert_eq!(profile.inhabited_time_hz(), 20);
         assert_eq!(profile.scheduler_budget_ms(), 0);
         assert!(!profile.scheduler_guard());
@@ -621,6 +642,7 @@ mod tests {
         assert!(profile.disabled(HcfFeature::RandomTicks));
         assert!(profile.disabled(HcfFeature::Statistics));
         assert!(profile.disabled(HcfFeature::Advancements));
+        assert!(profile.worldgen_disabled());
         assert!(profile.fast_chunks());
         assert!(profile.fast_players());
         assert!(profile.fast_tracker());
@@ -656,6 +678,7 @@ mod tests {
             enabled: true,
             only_overworld: Some(false),
             disable_weather: Some(false),
+            disable_worldgen: Some(false),
             scheduler_budget_ms: Some(0),
             scheduler_guard: Some(false),
             inhabited_time_hz: Some(20),
@@ -666,6 +689,7 @@ mod tests {
 
         assert!(!profile.only_overworld());
         assert!(!profile.disabled(HcfFeature::Weather));
+        assert!(!profile.worldgen_disabled());
         assert!(!profile.fast_path(HcfFeature::SchedulerBudget));
         assert_eq!(profile.scheduler_budget_ms(), 0);
         assert!(!profile.scheduler_guard());
