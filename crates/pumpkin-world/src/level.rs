@@ -1035,6 +1035,10 @@ impl Level {
 mod tests {
     use super::*;
     use pumpkin_config::world::LevelConfig;
+    use pumpkin_data::chunk::ChunkStatus;
+    use pumpkin_util::math::vector2::Vector2;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -1104,5 +1108,31 @@ mod tests {
 
         assert!(level.world_gen().is_pregenerated());
         assert!(level.world_gen().global_structure_cache().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pregenerated_missing_chunk_is_void() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path().to_path_buf();
+        let config = LevelConfig::default();
+        let level = Level::from_root_folder(&config, root, 0, Dimension::OVERWORLD, false);
+
+        let pos = Vector2::new(0, 0);
+        let chunk = tokio::time::timeout(
+            Duration::from_secs(10),
+            level.get_or_fetch_chunk(pos, Arc::clone),
+        )
+        .await
+        .expect("missing pre-generated chunk was not served in time");
+
+        assert_eq!(chunk.x, 0);
+        assert_eq!(chunk.z, 0);
+        assert_eq!(chunk.status, ChunkStatus::Full);
+        assert_eq!(
+            chunk.section.get_block_absolute_y(0, 0, 0),
+            Some(pumpkin_data::Block::AIR.default_state.id)
+        );
+        assert!(chunk.light_populated.load(Ordering::Relaxed));
+        assert!(!chunk.dirty.load(Ordering::Relaxed));
     }
 }

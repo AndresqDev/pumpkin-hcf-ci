@@ -7,7 +7,7 @@ use crate::generation::Seed;
 /// The server keeps loading chunks from disk. Any chunk that is not present is
 /// handled by the chunk system as an empty void chunk, so this generator never
 /// needs to run terrain, biome, feature, carver or structure generation.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PreGeneratedGenerator {
     seed: Seed,
     dimension: Dimension,
